@@ -1,0 +1,173 @@
+# CartPulse — real-time e-commerce analytics on a laptop.
+#
+#   make up      build and start everything (about 6 GB of RAM for Docker)
+#   make ps      status            make logs S=stream     follow one service
+#   make down    stop (keep data)  make clean             stop and wipe everything
+#
+# Everything the pipeline writes to disk lives in ./data (lake, inbox, checkpoints),
+# so you can open the Parquet files directly while it runs.
+
+name: cartpulse
+
+x-env: &env
+  SHOP_DSN: postgresql://shop:shop@postgres:5432/shop
+  WAREHOUSE_DSN: postgresql://loader:loader@postgres:5432/warehouse
+  API_DB_DSN: postgresql://api_reader:api_reader@postgres:5432/warehouse
+  KAFKA_BOOTSTRAP: redpanda:9092
+  CONNECT_URL: http://connect:8083
+  REDIS_URL: redis://redis:6379/0
+  DATA_DIR: /data
+  ABANDON_AFTER_MINUTES: "5"        # how long a cart sits idle before it counts as abandoned
+
+x-app: &app
+  build: ./app
+  image: cartpulse/app:latest
+  environment: *env
+  volumes:
+    - ./app/cartpulse:/opt/cartpulse/cartpulse     # live-edit code without rebuilding
+    - ./data:/data
+
+services:
+  # ---------------------------------------------------------------- storage
+  postgres:                 # one server, three databases: shop (OLTP), warehouse, airflow
+    image: postgres:16
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=4", "-c", "max_wal_senders=4"]
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: postgres
+    ports: ["5432:5432"]
+    volumes:
+      - ./sql:/docker-entrypoint-initdb.d:ro
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d shop"]
+      interval: 5s
+      retries: 30
+
+  redis:                    # high-velocity store for live metrics
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  # -------------------------------------------------------------- streaming
+  redpanda:                 # Kafka-compatible broker
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.27
+    command:
+      - redpanda start
+      - --mode dev-container
+      - --smp 1
+      - --memory 1G
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports: ["19092:19092"]
+    volumes: [redpanda-data:/var/lib/redpanda/data]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 10s
+      retries: 20
+
+  console:                  # web UI for topics and CDC events
+    image: docker.redpanda.com/redpandadata/console:v2.8.16
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports: ["8080:8080"]
+    depends_on:
+      redpanda: { condition: service_healthy }
+
+  connect:                  # Kafka Connect + Debezium: Postgres WAL -> topics
+    image: quay.io/debezium/connect:2.7.3.Final
+    environment:
+      BOOTSTRAP_SERVERS: redpanda:9092
+      GROUP_ID: cartpulse-connect
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+    ports: ["8083:8083"]
+    depends_on:
+      redpanda: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  # --------------------------------------------------------------- the app
+  bootstrap:                # one-shot: folders, topics, Debezium connector
+    <<: *app
+    command: ["python", "-m", "cartpulse.bootstrap"]
+    depends_on:
+      redpanda: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      connect: { condition: service_started }
+    restart: "no"
+
+  simulator:                # the "store": shoppers, orders, deliveries
+    <<: *app
+    command: ["python", "-m", "cartpulse.simulator"]
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  stream:                   # Spark Structured Streaming: 4 queries, one app
+    <<: *app
+    command: ["python", "-m", "cartpulse.streaming.app"]
+    ports: ["4040:4040"]    # Spark UI
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  api:                      # FastAPI + live dashboard on http://localhost:8000
+    <<: *app
+    command: ["uvicorn", "cartpulse.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+
+  # ------------------------------------------------------------- batch layer
+  airflow:                  # scheduler + webserver in one container (LocalExecutor)
+    build: ./airflow
+    image: cartpulse/airflow:latest
+    environment:
+      <<: *env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+      AIRFLOW__WEBSERVER__SECRET_KEY: cartpulse-local-only
+      PYTHONPATH: /opt/cartpulse
+      DBT_PROFILES_DIR: /opt/cartpulse/dbt
+      DBT_TARGET_PATH: /tmp/dbt-target
+      DBT_LOG_PATH: /tmp/dbt-logs
+    command:
+      - bash
+      - -c
+      - >-
+        airflow db migrate &&
+        (airflow users create --role Admin --username admin --password admin
+        --firstname Cart --lastname Pulse --email admin@example.com || true) &&
+        airflow pools set spark 1 "One local Spark job at a time" &&
+        (airflow scheduler & exec airflow webserver)
+    ports: ["8081:8080"]
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./app/cartpulse:/opt/cartpulse/cartpulse
+      - ./dbt:/opt/cartpulse/dbt
+      - ./data:/data
+    depends_on:
+      postgres: { condition: service_healthy }
+      bootstrap: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  redis-data:
+  redpanda-data:
