@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CartPulse</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f4f2; --surface-1: #fcfcfb; --border: #e3e2de; --grid: #ecebe7;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7973;
+    --series-1: #2a78d6; --series-1-soft: #86b6ef; --live: #1baf7a; --warn: #b26b00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2e2b; --grid: #262624;
+      --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+      --series-1: #3987e5; --series-1-soft: #184f95; --live: #199e70; --warn: #e0a030;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #111110; --surface-1: #1a1a19; --border: #2e2e2b; --grid: #262624;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
+    --series-1: #3987e5; --series-1-soft: #184f95; --live: #199e70; --warn: #e0a030;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface-0); color: var(--text-primary);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+           padding: 20px 24px 8px; max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--text-secondary); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
+  main { max-width: 1280px; margin: 0 auto; padding: 8px 24px 40px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-secondary);
+       margin: 26px 0 10px; font-weight: 600; }
+  .grid { display: grid; gap: 12px; }
+  .kpis { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  .two { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .card h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+  .card h3 small { font-weight: 400; color: var(--text-muted); margin-left: 6px; }
+  .kpi .label { color: var(--text-secondary); font-size: 12px; }
+  .kpi .value { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .kpi .note { color: var(--text-muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th { color: var(--text-secondary); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .empty { color: var(--text-muted); padding: 18px 0; text-align: center; }
+  .scroll { overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  svg text { fill: var(--text-muted); font-size: 11px; }
+  .tip { position: fixed; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+         border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+         display: none; z-index: 10; }
+  footer { color: var(--text-muted); font-size: 12px; margin-top: 28px; }
+  a { color: var(--series-1); }
+  @media (max-width: 480px) { header, main { padding-left: 16px; padding-right: 16px; } .two { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>CartPulse</h1>
+  <span class="sub">Real-time analytics for an online store</span>
+  <span class="pill"><span class="dot"></span><span id="updated">connecting…</span></span>
+</header>
+<main>
+  <h2>Right now <span style="text-transform:none;font-weight:400">· speed layer (Spark Streaming → Redis)</span></h2>
+  <div class="grid kpis" id="kpis"></div>
+
+  <div class="grid two" style="margin-top:12px">
+    <div class="card"><h3>Active sessions per minute <small>last 30 min</small></h3><div id="sessions-chart"></div></div>
+    <div class="card"><h3>Funnel <small>events, last 15 min</small></h3><div id="funnel-chart"></div></div>
+  </div>
+  <div class="grid two" style="margin-top:12px">
+    <div class="card"><h3>Abandoned carts <small>detected by stateful stream</small></h3><div class="scroll" id="abandoned"></div></div>
+    <div class="card"><h3>Recent orders <small>from CDC</small></h3><div class="scroll" id="orders"></div></div>
+  </div>
+  <div class="grid two" style="margin-top:12px">
+    <div class="card"><h3>Top products today <small>by revenue</small></h3><div class="scroll" id="top"></div></div>
+    <div class="card"><h3>Low stock <small>at or below reorder level</small></h3><div class="scroll" id="lowstock"></div></div>
+  </div>
+
+  <h2>History <span style="text-transform:none;font-weight:400">· batch layer (Airflow → Spark → dbt), refreshed every 30 min</span></h2>
+  <div class="card"><h3>Revenue per day <small>last 30 days · ★ public holiday</small></h3><div id="sales-chart"></div></div>
+  <div class="grid two" style="margin-top:12px">
+    <div class="card"><h3>Conversion by traffic source <small>last 7 days</small></h3><div class="scroll" id="sources"></div></div>
+    <div class="card"><h3>Courier SLA <small>delivered within 72h (96h remote)</small></h3><div class="scroll" id="sla"></div></div>
+  </div>
+  <div class="grid two" style="margin-top:12px">
+    <div class="card"><h3>Customer segments <small>RFM</small></h3><div class="scroll" id="segments"></div></div>
+    <div class="card"><h3>Data quality <small>last 7 days</small></h3><div class="scroll" id="dq"></div></div>
+  </div>
+  <footer>API docs at <a href="/docs">/docs</a>. Live panels refresh every 5 s, history every 60 s.</footer>
+</main>
+<div class="tip" id="tip"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const zar = (v) => "R " + Number(v || 0).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
+const zar2 = (v) => "R " + Number(v || 0).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = (v) => v == null ? "–" : (Number(v) * 100).toFixed(1) + "%";
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const tip = $("tip");
+
+async function get(path) {
+  try { const r = await fetch(path); return r.ok ? r.json() : null; } catch { return null; }
+}
+
+function table(el, rows, cols, emptyMsg) {
+  if (!rows || !rows.length) { el.innerHTML = `<div class="empty">${emptyMsg}</div>`; return; }
+  el.innerHTML = `<table><thead><tr>${cols.map(c => `<th class="${c.num ? "num" : ""}">${c.label}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map(r => `<tr>${cols.map(c => `<td class="${c.num ? "num" : ""}">${c.fmt ? c.fmt(r[c.key], r) : esc(r[c.key])}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+function showTip(evt, html) {
+  tip.innerHTML = html; tip.style.display = "block";
+  const x = Math.min(evt.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
+  tip.style.left = x + "px"; tip.style.top = (evt.clientY + 12) + "px";
+}
+const hideTip = () => { tip.style.display = "none"; };
+
+// Vertical bars, one series. Hit targets span the full column height.
+function barChart(el, data, { label, value, fmt, mark }) {
+  if (!data.length) { el.innerHTML = '<div class="empty">No data yet</div>'; return; }
+  const W = 1180, H = 240, L = 52, B = 26, T = 14, max = Math.max(...data.map(value), 1) * 1.1;
+  const step = (W - L) / data.length, bw = Math.max(2, step - 2);
+  const y = (v) => T + (H - T - B) * (1 - v / max);
+  const ticks = [0, max / 2, max].map(v => `<line x1="${L}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/>
+     <text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v)}</text>`).join("");
+  const every = Math.ceil(data.length / 8);
+  const bars = data.map((d, i) => {
+    const x = L + i * step + 1, h = Math.max(0, H - B - y(value(d))), r = Math.min(4, bw / 2, h);
+    const top = H - B - h;
+    const path = h > 0 ? `M${x},${H - B}V${top + r}Q${x},${top} ${x + r},${top}H${x + bw - r}Q${x + bw},${top} ${x + bw},${top + r}V${H - B}Z` : "";
+    return `<path d="${path}" fill="var(--series-1)"/>
+      ${i % every === 0 ? `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${esc(label(d))}</text>` : ""}
+      ${mark && mark(d) ? `<text x="${x + bw / 2}" y="${top - 4}" text-anchor="middle">★</text>` : ""}
+      <rect class="hit" data-i="${i}" x="${L + i * step}" y="${T}" width="${step}" height="${H - T - B}" fill="transparent"/>`;
+  }).join("");
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img">${ticks}${bars}</svg>`;
+  el.querySelectorAll(".hit").forEach(h => {
+    const d = data[+h.dataset.i];
+    h.addEventListener("mousemove", e => showTip(e, el._tip(d)));
+    h.addEventListener("mouseleave", hideTip);
+  });
+}
+
+function lineChart(el, data, { label, value }) {
+  if (!data.length) { el.innerHTML = '<div class="empty">No data yet</div>'; return; }
+  const W = 560, H = 190, L = 34, B = 24, T = 10, max = Math.max(...data.map(value), 4) * 1.15;
+  const x = (i) => L + (W - L - 8) * (i / Math.max(1, data.length - 1));
+  const y = (v) => T + (H - T - B) * (1 - v / max);
+  const pts = data.map((d, i) => `${x(i)},${y(value(d))}`).join(" ");
+  const grid = [0, max / 2, max].map(v => `<line x1="${L}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/>
+     <text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${Math.round(v)}</text>`).join("");
+  const every = Math.ceil(data.length / 6);
+  const labels = data.map((d, i) => i % every === 0 ? `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${esc(label(d))}</text>` : "").join("");
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img">${grid}${labels}
+    <polyline points="${pts}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round"/>
+    <line id="xh" y1="${T}" y2="${H - B}" stroke="var(--text-muted)" stroke-dasharray="3 3" visibility="hidden"/>
+    <circle id="xd" r="4" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" visibility="hidden"/>
+    <rect x="${L}" y="${T}" width="${W - L}" height="${H - T - B}" fill="transparent" id="hit"/></svg>`;
+  const svg = el.querySelector("svg"), xh = el.querySelector("#xh"), xd = el.querySelector("#xd");
+  el.querySelector("#hit").addEventListener("mousemove", e => {
+    const box = svg.getBoundingClientRect(), px = (e.clientX - box.left) * W / box.width;
+    const i = Math.max(0, Math.min(data.length - 1, Math.round((px - L) / (W - L - 8) * (data.length - 1))));
+    xh.setAttribute("x1", x(i)); xh.setAttribute("x2", x(i)); xh.setAttribute("visibility", "visible");
+    xd.setAttribute("cx", x(i)); xd.setAttribute("cy", y(value(data[i]))); xd.setAttribute("visibility", "visible");
+    showTip(e, `<b>${esc(label(data[i]))}</b><br>${value(data[i])} active sessions`);
+  });
+  el.querySelector("#hit").addEventListener("mouseleave", () => { hideTip(); xh.setAttribute("visibility", "hidden"); xd.setAttribute("visibility", "hidden"); });
+}
+
+// Horizontal funnel: one hue, value labelled at the end of each bar.
+function funnelChart(el, events) {
+  const stages = [["page_view", "Page views"], ["product_view", "Product views"], ["add_to_cart", "Add to cart"],
+                  ["begin_checkout", "Checkout"], ["purchase", "Purchase"]];
+  const max = Math.max(...stages.map(([k]) => events[k] || 0), 1);
+  const W = 560, rowH = 34, L = 108;
+  const rows = stages.map(([k, name], i) => {
+    const v = events[k] || 0, w = Math.max(v ? 3 : 0, (W - L - 60) * v / max), yy = i * rowH + 6;
+    return `<text x="${L - 8}" y="${yy + 15}" text-anchor="end" style="fill:var(--text-secondary)">${name}</text>
+      <rect x="${L}" y="${yy}" width="${w}" height="20" rx="4" fill="var(--series-1)"/>
+      <text x="${L + w + 6}" y="${yy + 15}" style="fill:var(--text-primary)">${v.toLocaleString()}</text>`;
+  }).join("");
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${stages.length * rowH + 4}" role="img" aria-label="Funnel">${rows}</svg>`;
+}
+
+async function refreshLive() {
+  const [ov, fn15, fn30, ab, od, tp, ls] = await Promise.all([
+    get("/api/live/overview"), get("/api/live/funnel?minutes=15"), get("/api/live/funnel?minutes=30"),
+    get("/api/live/abandoned-carts?limit=8"), get("/api/live/orders?limit=8"),
+    get("/api/live/top-products?by=revenue&limit=6"), get("/api/live/low-stock?limit=8")]);
+  if (!ov) { $("updated").textContent = "API unreachable"; return; }
+  const conv = fn15 && fn15.events.page_view ? fn15.events.purchase / Math.max(1, fn15.series.reduce((a, s) => a + s.sessions, 0)) : null;
+  const k = [
+    ["Revenue today", zar(ov.revenue), `${ov.orders} orders`],
+    ["Avg order value", zar2(ov.avg_order_value), `${ov.items_sold} items sold`],
+    ["Active sessions", ov.active_sessions_last_min, "in the last minute"],
+    ["Purchases / session", conv == null ? "–" : pct(conv), "last 15 min"],
+    ["Abandoned carts", ov.abandoned_carts, zar(ov.abandoned_value) + " left behind"],
+    ["Open orders", (ov.order_status.PLACED || 0) + (ov.order_status.PAID || 0) + (ov.order_status.SHIPPED || 0),
+      `${ov.order_status.SHIPPED || 0} with couriers`],
+  ];
+  $("kpis").innerHTML = k.map(([l, v, n]) => `<div class="card kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="note">${n}</div></div>`).join("");
+  if (fn30) lineChart($("sessions-chart"), fn30.series, { label: d => d.minute, value: d => d.sessions });
+  if (fn15) funnelChart($("funnel-chart"), fn15.events);
+  table($("abandoned"), ab, [
+    { key: "customer_name", label: "Customer" }, { key: "items", label: "Items", num: true },
+    { key: "cart_value", label: "Value", num: true, fmt: zar2 },
+    { key: "last_activity_at", label: "Last seen", fmt: v => new Date(v + (v.endsWith("Z") || v.includes("+") ? "" : "Z")).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" }) }],
+    `No abandoned carts yet — carts count as abandoned after a few idle minutes.`);
+  table($("orders"), od, [
+    { key: "order_id", label: "Order" }, { key: "province", label: "Province" }, { key: "payment", label: "Payment" },
+    { key: "total", label: "Total", num: true, fmt: zar2 }], "Waiting for the first live order…");
+  table($("top"), tp, [{ key: "name", label: "Product" }, { key: "revenue", label: "Revenue", num: true, fmt: zar }], "No sales yet today");
+  table($("lowstock"), ls, [{ key: "name", label: "Product" },
+    { key: "stock_on_hand", label: "In stock", num: true, fmt: v => `<span class="${v <= 3 ? "warn" : ""}">${v <= 3 ? "▲ " : ""}${v}</span>` }],
+    "All products above reorder level");
+  $("updated").textContent = "live · " + new Date().toLocaleTimeString("en-ZA");
+}
+
+async function refreshHistory() {
+  const [sales, src, sla, seg, dq] = await Promise.all([
+    get("/api/sales/daily?days=30"), get("/api/funnel/by-source?days=7"), get("/api/delivery/sla"),
+    get("/api/customers/segments"), get("/api/data-quality")]);
+  const el = $("sales-chart");
+  el._tip = d => `<b>${d.order_date} (${d.day_name})</b>${d.holiday_name ? "<br>★ " + esc(d.holiday_name) : ""}${d.is_payday_period ? "<br>Payday period" : ""}<br>${zar(d.revenue)} · ${d.orders} orders · AOV ${zar(d.avg_order_value)}`;
+  if (sales) barChart(el, sales, { label: d => d.order_date.slice(5), value: d => Number(d.revenue), fmt: v => "R" + Math.round(v / 1000) + "k", mark: d => d.is_public_holiday });
+  else el.innerHTML = '<div class="empty">Marts not built yet — the first batch run takes a few minutes.</div>';
+  table($("sources"), src, [{ key: "traffic_source", label: "Source" }, { key: "sessions", label: "Sessions", num: true },
+    { key: "purchased", label: "Bought", num: true }, { key: "conversion_rate", label: "Conversion", num: true, fmt: pct }], "No sessions modelled yet");
+  table($("sla"), sla, [{ key: "courier", label: "Courier" }, { key: "deliveries", label: "Deliveries", num: true },
+    { key: "avg_hours", label: "Avg hours", num: true }, { key: "sla_rate", label: "On time", num: true, fmt: pct }], "No deliveries yet");
+  table($("segments"), seg, [{ key: "segment", label: "Segment" }, { key: "customers", label: "Customers", num: true },
+    { key: "revenue", label: "Revenue", num: true, fmt: zar }, { key: "avg_recency_days", label: "Days since order", num: true }], "No segments yet");
+  table($("dq"), dq, [{ key: "dataset", label: "Dataset" }, { key: "rule_name", label: "Rule" }, { key: "dimension", label: "Dimension" },
+    { key: "pass_rate", label: "Pass rate", num: true, fmt: v => `<span class="${v < 0.99 ? "warn" : ""}">${v < 0.99 ? "▲ " : ""}${pct(v)}</span>` }], "No checks have run yet");
+}
+
+refreshLive(); refreshHistory();
+setInterval(refreshLive, 5000);
+setInterval(refreshHistory, 60000);
+</script>
+</body>
+</html>
