@@ -1,0 +1,26 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    loaded_at_field: loaded_at
+    freshness:
+      warn_after: {count: 1, period: hour}
+      error_after: {count: 6, period: hour}
+    tables:
+      - name: cdc_events
+        description: Debezium change events for every shop table (loaded from the lake).
+      - name: sessions
+        description: One row per browsing session, built by the Spark sessionize job.
+      - name: deliveries
+        description: Courier file rows that passed data-quality checks.
+      - name: abandoned_carts
+        description: Carts the stream flagged as abandoned.
+      - name: public_holidays
+        description: SA public holidays from the Nager.Date REST API.
+        freshness:
+          warn_after: {count: 8, period: day}
+  - name: ops
+    schema: ops
+    tables:
+      - name: dq_results
