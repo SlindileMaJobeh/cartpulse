@@ -1,0 +1,17 @@
+name: cartpulse
+version: "1.0.0"
+config-version: 2
+profile: cartpulse
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+models:
+  cartpulse:
+    staging:
+      +schema: staging
+      +materialized: view
+    marts:
+      +schema: marts
+      +materialized: table

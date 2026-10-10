@@ -1,0 +1,79 @@
+version: 2
+
+models:
+  - name: dim_date
+    columns:
+      - name: date_day
+        data_tests: [unique, not_null]
+
+  - name: dim_customers
+    description: SCD2 customer dimension from CDC. Email and phone are masked.
+    columns:
+      - name: customer_sk
+        data_tests: [unique, not_null]
+
+  - name: dim_products
+    description: SCD2 product dimension - full price and cost history.
+    columns:
+      - name: product_sk
+        data_tests: [unique, not_null]
+      - name: margin_pct
+        data_tests:
+          - value_between: {arguments: {min_value: 0, max_value: 1}}
+
+  - name: fct_orders
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['PLACED', 'PAID', 'SHIPPED', 'DELIVERED', 'CANCELLED', 'RETURNED']
+      - name: customer_sk
+        description: Customer version valid when the order was placed.
+        data_tests: [not_null]
+      - name: delivery_hours
+        data_tests:
+          - value_between:
+              arguments: {min_value: 0, max_value: 720}
+
+  - name: fct_order_items
+    data_tests:
+      - unique_combination: {arguments: {columns: ['order_id', 'product_id']}}
+    columns:
+      - name: product_sk
+        data_tests: [not_null]
+
+  - name: fct_sessions
+    columns:
+      - name: session_id
+        data_tests: [unique, not_null]
+
+  - name: mart_sales_daily
+    columns:
+      - name: order_date
+        data_tests: [unique, not_null]
+
+  - name: mart_funnel_daily
+    data_tests:
+      - unique_combination: {arguments: {columns: ['session_date', 'traffic_source']}}
+
+  - name: mart_delivery_sla
+    columns:
+      - name: sla_rate
+        data_tests:
+          - value_between: {arguments: {min_value: 0, max_value: 1}}
+
+  - name: mart_customer_rfm
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: segment
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Champions', 'Loyal', 'New / Promising', 'At Risk', 'Hibernating', 'Needs Attention']
+
+  - name: mart_abandoned_carts_daily
+  - name: mart_dq_scorecard
