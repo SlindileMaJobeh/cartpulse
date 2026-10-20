@@ -161,3 +161,5 @@ GitHub Actions runs the tests, `dbt build` against a real Postgres, and validate
 
 Built with Python 3.11, PySpark 3.5, Redpanda 24.2, Debezium 2.7, Airflow 2.10,
 dbt 1.10, PostgreSQL 16, Redis 7 and FastAPI.
+
+WTC-D9ETLV7K
